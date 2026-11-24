@@ -4,88 +4,225 @@ import android.app.Activity
 import android.os.Bundle
 import android.Manifest
 import android.content.pm.PackageManager
-import android.content.ContentUris
-import android.provider.MediaStore
-import android.media.MediaPlayer
-import android.net.Uri
-import android.widget.*
+import android.content.ComponentName
+import android.content.Context
+import android.content.res.ColorStateList
 import android.graphics.Color
+import android.net.Uri
+import android.provider.MediaStore
+import android.view.Gravity
+import android.view.View
+import android.widget.*
+import androidx.media3.common.MediaItem
+import androidx.media3.common.MediaMetadata
+import androidx.media3.common.Player
+import androidx.media3.session.MediaController
+import androidx.media3.session.SessionToken
+import java.util.concurrent.Executor
 
 class MainActivity : Activity() {
 
-    private var player: MediaPlayer? = null
-    private val songs = mutableListOf<Pair<String, Uri>>()
-    private lateinit var list: LinearLayout
+    private data class Song(val title: String, val uri: Uri)
+
+    private val songs = mutableListOf<Song>()
+    private val favorites = mutableSetOf<String>()
+
+    private var controller: MediaController? = null
+    private lateinit var controllerFuture:
+        com.google.common.util.concurrent.ListenableFuture<MediaController>
+
+    private lateinit var root: LinearLayout
+    private lateinit var songList: LinearLayout
     private lateinit var status: TextView
+    private lateinit var playButton: Button
+
+    private val blue = Color.rgb(35, 145, 255)
+    private val background = Color.rgb(8, 12, 22)
+    private val cardColor = Color.rgb(19, 28, 44)
+    private val white = Color.WHITE
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
 
-        window.statusBarColor = Color.rgb(15, 15, 25)
-        window.navigationBarColor = Color.rgb(15, 15, 25)
+        window.statusBarColor = background
+        window.navigationBarColor = background
 
-        val root = LinearLayout(this)
-        root.orientation = LinearLayout.VERTICAL
-        root.setPadding(24, 30, 24, 20)
-        root.setBackgroundColor(Color.rgb(15, 15, 25))
-
-        val title = TextView(this)
-        title.text = "TAMER GRAD"
-        title.textSize = 30f
-        title.setTextColor(Color.WHITE)
-        title.gravity = 17
-        root.addView(title)
-
-        val subtitle = TextView(this)
-        subtitle.text = "YOUR MUSIC. YOUR WORLD."
-        subtitle.textSize = 12f
-        subtitle.gravity = 17
-        subtitle.setTextColor(Color.LTGRAY)
-        root.addView(subtitle)
-
-        status = TextView(this)
-        status.text = "اختر أغنيتك واستمتع بالموسيقى"
-        status.textSize = 16f
-        status.setTextColor(Color.WHITE)
-        status.setPadding(0, 30, 0, 20)
-        root.addView(status)
-
-        val scroll = ScrollView(this)
-        list = LinearLayout(this)
-        list.orientation = LinearLayout.VERTICAL
-        scroll.addView(list)
-
-        root.addView(
-            scroll,
-            LinearLayout.LayoutParams(
-                -1, 0, 1f
-            )
+        favorites.addAll(
+            getSharedPreferences("tamer_pro", Context.MODE_PRIVATE)
+                .getStringSet("favorites", emptySet()) ?: emptySet()
         )
 
-        val stop = Button(this)
-        stop.text = "إيقاف الموسيقى"
-        stop.setOnClickListener {
-            player?.stop()
-            player?.release()
-            player = null
-            status.text = "تم إيقاف الموسيقى"
+        buildInterface()
+        connectMusicService()
+        checkPermission()
+    }
+
+    private fun buildInterface() {
+        root = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            setPadding(20, 25, 20, 16)
+            setBackgroundColor(background)
         }
-        root.addView(stop)
+
+        val scroll = ScrollView(this)
+        val content = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+        }
+
+        val title = TextView(this).apply {
+            text = "TAMER GRAD PRO"
+            textSize = 28f
+            setTextColor(blue)
+            gravity = Gravity.CENTER
+            typeface = android.graphics.Typeface.DEFAULT_BOLD
+            setPadding(0, 10, 0, 5)
+        }
+        content.addView(title)
+
+        val subtitle = TextView(this).apply {
+            text = "YOUR MUSIC. YOUR WORLD."
+            textSize = 11f
+            setTextColor(Color.LTGRAY)
+            gravity = Gravity.CENTER
+        }
+        content.addView(subtitle)
+
+        status = TextView(this).apply {
+            text = "جاري تجهيز مشغل الموسيقى..."
+            textSize = 15f
+            setTextColor(white)
+            gravity = Gravity.CENTER
+            setPadding(8, 25, 8, 20)
+        }
+        content.addView(status)
+
+        val controls = LinearLayout(this).apply {
+            gravity = Gravity.CENTER
+            orientation = LinearLayout.HORIZONTAL
+        }
+
+        val previous = makeButton("⏮")
+        previous.setOnClickListener {
+            controller?.seekToPreviousMediaItem()
+        }
+
+        playButton = makeButton("▶")
+        playButton.setOnClickListener {
+            val p = controller ?: return@setOnClickListener
+            if (p.isPlaying) {
+                p.pause()
+            } else {
+                if (p.mediaItemCount == 0 && songs.isNotEmpty()) {
+                    playSong(0)
+                } else {
+                    p.play()
+                }
+            }
+            updatePlayback()
+        }
+
+        val next = makeButton("⏭")
+        next.setOnClickListener {
+            controller?.seekToNextMediaItem()
+        }
+
+        controls.addView(previous)
+        controls.addView(playButton)
+        controls.addView(next)
+        content.addView(controls)
+
+        val heading = TextView(this).apply {
+            text = "مكتبة الموسيقى"
+            textSize = 20f
+            setTextColor(blue)
+            typeface = android.graphics.Typeface.DEFAULT_BOLD
+            setPadding(0, 25, 0, 12)
+        }
+        content.addView(heading)
+
+        songList = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+        }
+        content.addView(songList)
+
+        scroll.addView(content)
+        root.addView(scroll, LinearLayout.LayoutParams(-1, 0, 1f))
+
+        val footer = TextView(this).apply {
+            text = "TAMER GRAD PRO  •  VERSION 2.0"
+            textSize = 10f
+            setTextColor(Color.GRAY)
+            gravity = Gravity.CENTER
+            setPadding(0, 12, 0, 5)
+        }
+        root.addView(footer)
 
         setContentView(root)
+    }
 
-        checkPermission()
+    private fun makeButton(label: String): Button {
+        return Button(this).apply {
+            text = label
+            textSize = 19f
+            setTextColor(white)
+            backgroundTintList = ColorStateList.valueOf(cardColor)
+            isAllCaps = false
+            layoutParams = LinearLayout.LayoutParams(
+                0, 58, 1f
+            ).apply {
+                setMargins(5, 8, 5, 8)
+            }
+        }
+    }
+
+    private fun connectMusicService() {
+        val token = SessionToken(
+            this,
+            ComponentName(this, MusicService::class.java)
+        )
+
+        controllerFuture =
+            MediaController.Builder(this, token).buildAsync()
+
+        controllerFuture.addListener({
+            try {
+                controller = controllerFuture.get()
+
+                controller?.addListener(object : Player.Listener {
+                    override fun onIsPlayingChanged(isPlaying: Boolean) {
+                        updatePlayback()
+                    }
+
+                    override fun onMediaItemTransition(
+                        mediaItem: MediaItem?,
+                        reason: Int
+                    ) {
+                        val name = mediaItem?.mediaMetadata?.title
+                        if (name != null) {
+                            status.text = "يعمل الآن: $name"
+                        }
+                        updatePlayback()
+                    }
+                })
+
+                status.text = "محرك الموسيقى جاهز"
+            } catch (e: Exception) {
+                status.text = "تعذر الاتصال بمحرك الموسيقى"
+            }
+        }, Executor { it.run() })
     }
 
     private fun checkPermission() {
         val permission =
-            if (android.os.Build.VERSION.SDK_INT >= 33)
+            if (android.os.Build.VERSION.SDK_INT >= 33) {
                 Manifest.permission.READ_MEDIA_AUDIO
-            else
+            } else {
                 Manifest.permission.READ_EXTERNAL_STORAGE
+            }
 
         if (checkSelfPermission(permission) ==
-            PackageManager.PERMISSION_GRANTED) {
+            PackageManager.PERMISSION_GRANTED
+        ) {
             loadSongs()
         } else {
             requestPermissions(arrayOf(permission), 100)
@@ -100,20 +237,22 @@ class MainActivity : Activity() {
         super.onRequestPermissionsResult(
             requestCode, permissions, grantResults
         )
+
         if (requestCode == 100 &&
             grantResults.isNotEmpty() &&
-            grantResults[0] == PackageManager.PERMISSION_GRANTED) {
+            grantResults[0] == PackageManager.PERMISSION_GRANTED
+        ) {
             loadSongs()
+        } else if (requestCode == 100) {
+            status.text = "يجب السماح بالوصول إلى ملفات الموسيقى"
         }
     }
 
     private fun loadSongs() {
         songs.clear()
-        list.removeAllViews()
+        songList.removeAllViews()
 
-        val collection =
-            MediaStore.Audio.Media.EXTERNAL_CONTENT_URI
-
+        val collection = MediaStore.Audio.Media.EXTERNAL_CONTENT_URI
         val projection = arrayOf(
             MediaStore.Audio.Media._ID,
             MediaStore.Audio.Media.TITLE
@@ -127,62 +266,127 @@ class MainActivity : Activity() {
             "${MediaStore.Audio.Media.TITLE} ASC"
         )?.use { cursor ->
 
-            val idColumn =
-                cursor.getColumnIndexOrThrow(
-                    MediaStore.Audio.Media._ID
-                )
-
-            val titleColumn =
-                cursor.getColumnIndexOrThrow(
-                    MediaStore.Audio.Media.TITLE
-                )
+            val idColumn = cursor.getColumnIndexOrThrow(
+                MediaStore.Audio.Media._ID
+            )
+            val titleColumn = cursor.getColumnIndexOrThrow(
+                MediaStore.Audio.Media.TITLE
+            )
 
             while (cursor.moveToNext()) {
                 val id = cursor.getLong(idColumn)
-                val name = cursor.getString(titleColumn)
+                val name = cursor.getString(titleColumn) ?: "Unknown"
 
-                val uri = ContentUris.withAppendedId(
+                val uri = android.content.ContentUris.withAppendedId(
                     collection, id
                 )
 
-                songs.add(Pair(name, uri))
+                songs.add(Song(name, uri))
             }
         }
 
         if (songs.isEmpty()) {
             status.text = "لم يتم العثور على أغاني في جهازك"
-        } else {
-            status.text = "عدد الأغاني: ${songs.size}"
+            return
+        }
 
-            songs.forEachIndexed { index, song ->
-                val button = Button(this)
-                button.text = "♫  ${song.first}"
-                button.setTextColor(Color.WHITE)
-                button.setOnClickListener {
+        status.text = "تم العثور على ${songs.size} أغنية"
+
+        songs.forEachIndexed { index, song ->
+            val row = LinearLayout(this).apply {
+                orientation = LinearLayout.HORIZONTAL
+                gravity = Gravity.CENTER_VERTICAL
+                setPadding(8, 5, 8, 5)
+                setBackgroundColor(cardColor)
+            }
+
+            val play = TextView(this).apply {
+                text = "♫  ${song.title}"
+                textSize = 15f
+                setTextColor(white)
+                setPadding(12, 14, 8, 14)
+                maxLines = 2
+                layoutParams = LinearLayout.LayoutParams(
+                    0, -2, 1f
+                )
+                setOnClickListener {
                     playSong(index)
                 }
-                list.addView(button)
             }
+
+            val favorite = Button(this).apply {
+                text = if (favorites.contains(song.uri.toString())) "★" else "☆"
+                textSize = 20f
+                setTextColor(blue)
+                backgroundTintList =
+                    ColorStateList.valueOf(cardColor)
+                setOnClickListener {
+                    toggleFavorite(song)
+                    text = if (favorites.contains(song.uri.toString())) "★" else "☆"
+                }
+            }
+
+            row.addView(play)
+            row.addView(favorite)
+
+            val params = LinearLayout.LayoutParams(-1, -2)
+            params.setMargins(0, 4, 0, 4)
+            songList.addView(row, params)
         }
     }
 
     private fun playSong(index: Int) {
-        try {
-            player?.release()
-            player = MediaPlayer.create(this, songs[index].second)
-
-            if (player != null) {
-                player?.start()
-                status.text = "يعمل الآن: ${songs[index].first}"
-            }
-        } catch (e: Exception) {
-            status.text = "تعذر تشغيل الأغنية"
+        val p = controller
+        if (p == null) {
+            status.text = "انتظر حتى يجهز محرك الموسيقى"
+            return
         }
+
+        if (index !in songs.indices) return
+
+        val items = songs.map { song ->
+            MediaItem.Builder()
+                .setUri(song.uri)
+                .setMediaMetadata(
+                    MediaMetadata.Builder()
+                        .setTitle(song.title)
+                        .build()
+                )
+                .build()
+        }
+
+        p.setMediaItems(items)
+        p.prepare()
+        p.seekTo(index, 0)
+        p.play()
+
+        status.text = "يعمل الآن: ${songs[index].title}"
+        updatePlayback()
+    }
+
+    private fun toggleFavorite(song: Song) {
+        val key = song.uri.toString()
+
+        if (favorites.contains(key)) {
+            favorites.remove(key)
+        } else {
+            favorites.add(key)
+        }
+
+        getSharedPreferences("tamer_pro", Context.MODE_PRIVATE)
+            .edit()
+            .putStringSet("favorites", favorites.toSet())
+            .apply()
+    }
+
+    private fun updatePlayback() {
+        playButton.text =
+            if (controller?.isPlaying == true) "⏸" else "▶"
     }
 
     override fun onDestroy() {
-        player?.release()
-        player = null
+        MediaController.releaseFuture(controllerFuture)
+        controller = null
         super.onDestroy()
     }
 }
