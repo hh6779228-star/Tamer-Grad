@@ -26,6 +26,9 @@ class MainActivity : Activity() {
 
     private val songs = mutableListOf<Song>()
     private val favorites = mutableSetOf<String>()
+    private val selectedSongs = mutableSetOf<String>()
+    private lateinit var selectionStatus: TextView
+    private lateinit var selectAllButton: Button
 
     private var controller: MediaController? = null
     private lateinit var controllerFuture:
@@ -139,6 +142,50 @@ class MainActivity : Activity() {
             setPadding(0, 25, 0, 12)
         }
         content.addView(heading)
+
+        val selectionBar = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+        }
+
+        selectionStatus = TextView(this).apply {
+            text = "المحدد: 0"
+            textSize = 14f
+            setTextColor(white)
+            layoutParams = LinearLayout.LayoutParams(0, -2, 1f)
+        }
+
+        selectAllButton = makeButton("تحديد الكل").apply {
+            textSize = 12f
+            setOnClickListener {
+                if (songs.isNotEmpty() && selectedSongs.size == songs.size) {
+                    selectedSongs.clear()
+                } else {
+                    selectedSongs.clear()
+                    selectedSongs.addAll(songs.map { it.uri.toString() })
+                }
+                loadSongs()
+            }
+        }
+
+        selectionBar.addView(selectionStatus)
+        selectionBar.addView(selectAllButton)
+        content.addView(selectionBar)
+
+        val sendButton = makeButton("إرسال المحدد إلى Telegram").apply {
+            textSize = 14f
+            setOnClickListener {
+                Toast.makeText(
+                    this@MainActivity,
+                    if (selectedSongs.isEmpty())
+                        "حدد أغنية أولاً"
+                    else
+                        "تم تحديد ${selectedSongs.size} ملف. سيتم ربط الإرسال لاحقاً",
+                    Toast.LENGTH_LONG
+                ).show()
+            }
+        }
+        content.addView(sendButton)
 
         songList = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
@@ -291,6 +338,7 @@ class MainActivity : Activity() {
         }
 
         status.text = "تم العثور على ${songs.size} أغنية"
+        updateSelectionStatus()
 
         songs.forEachIndexed { index, song ->
             val row = LinearLayout(this).apply {
@@ -314,6 +362,19 @@ class MainActivity : Activity() {
                 }
             }
 
+            val select = CheckBox(this).apply {
+                buttonTintList = ColorStateList.valueOf(blue)
+                isChecked = selectedSongs.contains(song.uri.toString())
+                setOnCheckedChangeListener { _, checked ->
+                    if (checked) {
+                        selectedSongs.add(song.uri.toString())
+                    } else {
+                        selectedSongs.remove(song.uri.toString())
+                    }
+                    updateSelectionStatus()
+                }
+            }
+
             val favorite = Button(this).apply {
                 text = if (favorites.contains(song.uri.toString())) "★" else "☆"
                 textSize = 20f
@@ -326,12 +387,24 @@ class MainActivity : Activity() {
                 }
             }
 
+            row.addView(select)
             row.addView(play)
             row.addView(favorite)
 
             val params = LinearLayout.LayoutParams(-1, -2)
             params.setMargins(0, 4, 0, 4)
             songList.addView(row, params)
+        }
+    }
+
+    private fun updateSelectionStatus() {
+        if (::selectionStatus.isInitialized) {
+            selectionStatus.text = "المحدد: ${selectedSongs.size}"
+        }
+        if (::selectAllButton.isInitialized) {
+            selectAllButton.text =
+                if (songs.isNotEmpty() && selectedSongs.size == songs.size)
+                    "إلغاء الكل" else "تحديد الكل"
         }
     }
 
